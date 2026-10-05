@@ -63,7 +63,9 @@ async function ghGet() {
   const j = await r.json();
   sha = j.sha;
   const raw = atob(j.content.replace(/\n/g, ''));
-  return JSON.parse(raw);
+  if (!raw.trim()) return null;
+  try { return JSON.parse(raw); }
+  catch { return null; }
 }
 
 async function ghPut(obj) {
