@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clicker</title>
+<style>
+  body { font-family: system-ui, sans-serif; background:#111; color:#eee; display:flex; flex-direction:column; align-items:center; padding:20px; gap:12px; }
+  input, button { padding:10px 14px; border-radius:8px; border:1px solid #444; background:#1c1c1c; color:#eee; font-size:15px; }
+  button { cursor:pointer; background:#2563eb; border:none; font-weight:600; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  #clickBtn { width:220px; height:220px; border-radius:50%; font-size:28px; background:linear-gradient(145deg,#2563eb,#1e40af); }
+  #clickBtn:active { transform:scale(.96); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; }
+  #log { font-size:13px; color:#888; max-width:500px; text-align:center; min-height:1.2em; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+
+<div id="authScreen" style="display:flex;flex-direction:column;gap:12px;align-items:center;">
+  <h2>Вход / Регистрация</h2>
+  <input id="tokenInput" type="password" placeholder="GitHub Fine-grained token" style="width:320px">
+  <input id="userInput" placeholder="Никнейм" style="width:320px">
+  <button onclick="login()">Войти</button>
+  <div id="authLog" style="font-size:13px;color:#f87171;min-height:1.2em;"></div>
+</div>
+
+<div id="gameScreen" class="hidden" style="display:flex;flex-direction:column;gap:12px;align-items:center;">
+  <div>Игрок: <b id="who"></b> · <a href="#" onclick="logout()">выйти</a></div>
+  <div style="font-size:22px;">Очки: <b id="score">0</b></div>
+  <button id="clickBtn" onclick="doClick()">+1</button>
+  <div class="row">
+    <button onclick="saveNow()">Сохранить</button>
+    <button onclick="loadNow()">Загрузить</button>
+  </div>
+  <div id="log"></div>
+</div>
+
+<script>
+const OWNER  = 'lonkixj';
+const REPO   = 'database';
+const FILE   = 'data';
+const BRANCH = 'main';
+
+let token = '', user = '', score = 0, sha = null, timer = null;
+const API = 'https://api.github.com';
+const $ = id => document.getElementById(id);
+const log = (m, err) => { $('log').textContent = m; $('log').style.color = err ? '#f87171' : '#888'; };
+
+function headers() {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'Content-Type': 'application/json'
+  };
+}
+
+async function ghGet() {
+  const r = await fetch(`${API}/repos/${OWNER}/${REPO}/contents/${FILE}?ref=${BRANCH}`, { headers: headers() });
+  if (r.status === 404) { sha = null; return null; }
+  if (!r.ok) throw new Error('GET ' + r.status);
+  const j = await r.json();
+  sha = j.sha;
+  const raw = atob(j.content.replace(/\n/g, ''));
+  return JSON.parse(raw);
+}
+
+async function ghPut(obj) {
+  const body = {
+    message: `update data for ${user}`,
+    content: btoa(unescape(encodeURIComponent(JSON.stringify(obj, null, 2)))),
+    branch: BRANCH
+  };
+  if (sha) body.sha = sha;
+  const r = await fetch(`${API}/repos/${OWNER}/${REPO}/contents/${FILE}`, {
+    method: 'PUT', headers: headers(), body: JSON.stringify(body)
+  });
+  if (!r.ok) { const e = await r.text(); throw new Error('PUT ' + r.status + ' ' + e); }
+  const j = await r.json();
+  sha = j.content.sha;
+}
+
+async function login() {
+  token = $('tokenInput').value.trim();
+  user  = $('userInput').value.trim();
+  $('authLog').textContent = '';
+  if (!token || !user) { $('authLog').textContent = 'Заполни оба поля'; return; }
+
+  try {
+    const me = await fetch(`${API}/user`, { headers: headers() });
+    if (!me.ok) throw new Error('Токен неверный');
+
+    let db = await ghGet();
+    if (!db) db = { players: {} };
+    if (!db.players) db.players = {};
+
+    if (!db.players[user]) {
+      db.players[user] = { score: 0, created: Date.now() };
+      await ghPut(db);
+    }
+
+    score = db.players[user].score || 0;
+
+    $('authScreen').classList.add('hidden');
+    $('gameScreen').classList.remove('hidden');
+    $('who').textContent = user;
+    $('score').textContent = score;
+
+    localStorage.setItem('gh_token', token);
+    localStorage.setItem('gh_user', user);
+
+    if (timer) clearInterval(timer);
+    timer = setInterval(saveNow, 15000);
+  } catch (e) {
+    $('authLog').textContent = 'Ошибка: ' + e.message;
+  }
+}
+
+function logout() {
+  if (timer) clearInterval(timer);
+  localStorage.removeItem('gh_token');
+  localStorage.removeItem('gh_user');
+  location.reload();
+}
+
+function doClick() {
+  score++;
+  $('score').textContent = score;
+}
+
+async function saveNow() {
+  try {
+    log('Сохранение...');
+    const db = (await ghGet()) || { players: {} };
+    if (!db.players) db.players = {};
+    db.players[user] = { ...(db.players[user] || {}), score, updated: Date.now() };
+    await ghPut(db);
+    log('Сохранено ✓');
+  } catch (e) {
+    log('Ошибка сохранения: ' + e.message, true);
+  }
+}
+
+async function loadNow() {
+  try {
+    const db = await ghGet();
+    if (db && db.players && db.players[user]) {
+      score = db.players[user].score || 0;
+      $('score').textContent = score;
+      log('Загружено ✓');
+    } else log('Нет данных для игрока', true);
+  } catch (e) { log('Ошибка загрузки: ' + e.message, true); }
+}
+
+(function auto() {
+  const t = localStorage.getItem('gh_token');
+  const u = localStorage.getItem('gh_user');
+  if (t && u) { $('tokenInput').value = t; $('userInput').value = u; login(); }
+})();
+</script>
+</body>
+</html>
